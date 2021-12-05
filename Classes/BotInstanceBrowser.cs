@@ -118,7 +118,7 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
                 ClosePopups(driver);
                 NavigateToBattlePage(driver);
 
-                if (!unbanMode && Settings.RentalBotActivated && Convert.ToBoolean(Settings.RentalBotMethodIsAvailable.Invoke(Settings.RentalBot.Unwrap(), new object[] { })))
+                if (!unbanMode && Settings.RentalBotActivated && Convert.ToBoolean(Settings.RentalBotMethodIsAvailable.Invoke(Settings.RentalBot.Unwrap(), Array.Empty<object>())))
                 {
                     Settings.RentalBotMethodSetActive.Invoke(Settings.RentalBot.Unwrap(), new object[] { true });
                     try
@@ -139,11 +139,11 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
                     }
                 }
 
-                var quest = await API.GetPlayerQuestAsync(Username);
-                Card[] cards = await API.GetPlayerCardsAsync(Username);
+                var quest = await SplinterlandsAPI.GetPlayerQuestAsync(Username);
+                Card[] cards = await SplinterlandsAPI.GetPlayerCardsAsync(Username);
                 if (Settings.UsePrivateAPI && Settings._Random.Next(0, 10) > 5)
                 {
-                    API.UpdateCardsForPrivateAPI(Username, cards);
+                    BattleAPI.UpdateCardsForPrivateAPI(Username, cards);
                 }
                 Log.WriteToLog($"{Username}: Deck size: {(cards.Length - 1).ToString().Pastel(Color.Red)} (duplicates filtered)"); // Minus 1 because phantom card array has an empty string in it
 
@@ -176,7 +176,7 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
                 Log.WriteToLog($"{Username}: Current Energy Capture Rate is { (ecr >= 50 ? ecr.ToString().Pastel(Color.Green) : ecr.ToString().Pastel(Color.Red)) }%");
                 if (ecr < Settings.ECRThreshold)
                 {
-                    Log.WriteToLog($"{Username}: ERC is below threshold of {Settings.ECRThreshold}% - skipping this account.", Log.LogType.Warning);
+                    Log.WriteToLog($"{Username}: ECR is below threshold of {Settings.ECRThreshold}% - skipping this account.", Log.LogType.Warning);
                     SleepUntil = DateTime.Now.AddMinutes(Settings.SleepBetweenBattles / 2);
                     return (SleepUntil, false);
                 }
@@ -212,7 +212,7 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
                 SleepUntil = DateTime.Now.AddMinutes(Settings.SleepBetweenBattles);
                 WaitForLoadingBanner(driver);
 
-                var team = await API.GetTeamFromAPIAsync(mana, rulesets, allowedSplinters, cards, quest.quest, quest.questLessDetails, Username);
+                var team = await BattleAPI.GetTeamFromAPIAsync(mana, rulesets, allowedSplinters, cards, quest.quest, quest.questLessDetails, Username);
                 if (team == null || (string)team["summoner_id"] == "")
                 {
                     Log.WriteToLog($"{Username}: API didn't find any team - Skipping Account", Log.LogType.CriticalError);
@@ -332,7 +332,7 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
                     logTextBattleResult = $"You lost :(";
                     Log.WriteToLog($"{Username}: { logTextBattleResult.Pastel(Color.Red) }");
                     Log.WriteToLog($"{Username}: New rating is {rating} ({ ratingChange.Pastel(Color.Red) })");
-                    API.ReportLoss(winner, Username);
+                    BattleAPI.ReportLoss(winner, Username);
                 }
             }
             else
@@ -802,7 +802,7 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
             return "unknown";
         }
 
-        private bool Login(IWebDriver driver, bool logoutNeeded)
+        public bool Login(IWebDriver driver, bool logoutNeeded)
         {
             Log.WriteToLog($"{ (UnknownUsername ? Email : Username) }: Trying to login...");
             driver.Navigate().GoToUrl("https://splinterlands.com/");

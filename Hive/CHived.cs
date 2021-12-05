@@ -34,8 +34,8 @@ namespace HiveAPI.CS
 			public UInt32 ref_block_prefix;
 			public DateTime expiration;
 			public Object[] operations;
-			public Object[] extensions = { };
-			public string[] signatures = { };
+			public Object[] extensions = Array.Empty<object>();
+			public string[] signatures = Array.Empty<string>();
 		}
 		public class CtransactionData
 		{
@@ -77,11 +77,14 @@ namespace HiveAPI.CS
 			}
             catch (Exception ex)
             {
-                if (ex.Message.Contains("internal error"))
+                if (ex.Message.Contains("Internal Error"))
                 {
-
+					return CreateTransaction(aOperations, astrPrivateKeys);
+				}
+                else
+                {
+					
                 }
-				// todo
             }
 			return null;
 		}
