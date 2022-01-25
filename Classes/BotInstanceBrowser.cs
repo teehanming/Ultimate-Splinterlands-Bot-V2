@@ -47,10 +47,10 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
         public string Key { get; init; } // only needed for plugins, not used by normal bot
         public bool CurrentlyActive { get; private set; }
 
-        private object _activeLock;
+        private readonly object _activeLock;
         private DateTime SleepUntil;
         private bool UnknownUsername;
-        private LogSummary LogSummary;
+        private readonly LogSummary LogSummary;
 
         public BotInstanceBrowser(string username, string password, int index, string key = "")
         {
@@ -174,9 +174,9 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
                 LogSummary.ECR = $"{ecr} %";
                 // todo: add log with different colors in same line
                 Log.WriteToLog($"{Username}: Current Energy Capture Rate is { (ecr >= 50 ? ecr.ToString().Pastel(Color.Green) : ecr.ToString().Pastel(Color.Red)) }%");
-                if (ecr < Settings.ECRThreshold)
+                if (ecr < Settings.StopBattleBelowECR)
                 {
-                    Log.WriteToLog($"{Username}: ECR is below threshold of {Settings.ECRThreshold}% - skipping this account.", Log.LogType.Warning);
+                    Log.WriteToLog($"{Username}: ECR is below threshold of {Settings.StopBattleBelowECR}% - skipping this account.", Log.LogType.Warning);
                     SleepUntil = DateTime.Now.AddMinutes(Settings.SleepBetweenBattles / 2);
                     return (SleepUntil, false);
                 }
@@ -515,7 +515,7 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
             return (string)Settings.CardsDetails[Convert.ToInt32(id) - 1]["color"];
         }
 
-        private int GetMana(IWebDriver driver)
+        private static int GetMana(IWebDriver driver)
         {
             driver.WaitForWebsiteLoadedAndElementShown(By.CssSelector("div.col-md-12 > div.mana-cap__icon"));
             Thread.Sleep(100);
@@ -524,13 +524,13 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
             return mana;
         }
 
-        private string GetRulesets(IWebDriver driver)
+        private static string GetRulesets(IWebDriver driver)
         {
-            string rulesets = String.Join("|", driver.FindElements(By.CssSelector("div.combat__rules > div.row > div>  img"))
+            string rulesets = string.Join("|", driver.FindElements(By.CssSelector("div.combat__rules > div.row > div>  img"))
                     .Select(x => x.GetAttribute("data-original-title").Split(':')[0].Trim()));
             return rulesets;
         }
-        private string[] GetAllowedSplinters(IWebDriver driver)
+        private static string[] GetAllowedSplinters(IWebDriver driver)
         {
             string[] splinters = driver.FindElements(By.CssSelector("div.col-sm-4 > img"))
                 .Where(x => x.GetAttribute("data-original-title").Split(':')[1].Trim() == "Active")
@@ -579,9 +579,11 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
                     driver.ClickElementOnPage(By.Id("claim-btn"));
                     Thread.Sleep(5000);
                     WaitForLoadingBanner(driver);
-                    Thread.Sleep(3000);
+                    driver.WaitForWebsiteLoadedAndElementShown(By.ClassName("card_img"));
+                    driver.ExecuteJavaScript("revealAll();");
+                    Thread.Sleep(10000);
                     driver.Navigate().Refresh();
-                    Thread.Sleep(5000);
+                    Thread.Sleep(2000);
                     WaitForLoadingBanner(driver);
                     Thread.Sleep(10000);
                     ClosePopups(driver);
@@ -618,12 +620,12 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
                         // todo: check if league can be reached
                         int rating = Convert.ToInt32(currentRating.Replace(".", "").Replace(",", ""));
                         int power = (int)Convert.ToDecimal(driver.FindElement(By.CssSelector("div#power_progress div.progress__info span.number_text")).Text, CultureInfo.InvariantCulture);
-                        bool waitForHigherLeague = (rating is >= 300 and < 400) && (power is >= 1000 || (Settings.RentalBotActivated && Settings.DesiredRentalPower >= 1000)) || // bronze 2
-                            (rating is >= 550 and < 700) && (power is >= 5000 || (Settings.RentalBotActivated && Settings.DesiredRentalPower >= 5000)) || // bronze 1 
-                            (rating is >= 900 and < 1000) && (power is >= 15000 || (Settings.RentalBotActivated && Settings.DesiredRentalPower >= 15000)) || // silver 3
-                            (rating is >= 1200 and < 1300) && (power is >= 40000 || (Settings.RentalBotActivated && Settings.DesiredRentalPower >= 40000)) || // silver 2
-                            (rating is >= 1500 and < 1600) && (power is >= 70000 || (Settings.RentalBotActivated && Settings.DesiredRentalPower >= 70000)) || // silver 1
-                            (rating is >= 1800 and < 1900) && (power is >= 100000 || (Settings.RentalBotActivated && Settings.DesiredRentalPower >= 100000)); // gold 
+                        bool waitForHigherLeague = (rating is >= 300 and < 400) && (power is >= 1000 || (Settings.WaitForMissingCPAtQuestClaim && power >= (0.1 * 1000))) || // bronze 2
+                            (rating is >= 600 and < 700) && (power is >= 5000 || (Settings.WaitForMissingCPAtQuestClaim && power >= (0.2 * 5000))) || // bronze 1 
+                            (rating is >= 840 and < 1000) && (power is >= 15000 || (Settings.WaitForMissingCPAtQuestClaim && power >= (0.5 * 15000))) || // silver 3
+                            (rating is >= 1200 and < 1300) && (power is >= 40000 || (Settings.WaitForMissingCPAtQuestClaim && power >= (0.8 * 40000))) || // silver 2
+                            (rating is >= 1500 and < 1600) && (power is >= 70000 || (Settings.WaitForMissingCPAtQuestClaim && power >= (0.85 * 70000))) || // silver 1
+                            (rating is >= 1800 and < 1900) && (power is >= 100000 || (Settings.WaitForMissingCPAtQuestClaim && power >= (0.9 * 100000))); // gold 
 
                         if (waitForHigherLeague)
                         {
@@ -861,7 +863,7 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
             return true;
         }
 
-        private void WaitForLoadingBanner(IWebDriver driver)
+        private static void WaitForLoadingBanner(IWebDriver driver)
         {
             do
             {

@@ -18,7 +18,7 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
                 byte[] hashBytes = md5.ComputeHash(inputBytes);
 
                 // Convert the byte array to hexadecimal string
-                StringBuilder sb = new StringBuilder();
+                StringBuilder sb = new();
                 for (int i = 0; i < hashBytes.Length; i++)
                 {
                     sb.Append(hashBytes[i].ToString("x2"));
@@ -35,7 +35,7 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
                 buf[i] = Settings.Subset[index];
             }
 
-            return new String(buf);
+            return new string(buf);
         }
         public async static Task<string> DownloadPageAsync(string url)
         {
@@ -48,8 +48,26 @@ namespace Ultimate_Splinterlands_Bot_V2.Classes
 
         public static string DoQuickRegex(string Pattern, string Match)
         {
-            Regex r = new Regex(Pattern, RegexOptions.Singleline);
+            Regex r = new(Pattern, RegexOptions.Singleline);
             return r.Match(Match).Groups[1].Value;
+        }
+
+        public static bool RunProcessWithResult(string file, string args)
+        {
+            Log.WriteToLog("PowerTransferDebug: Run Process: " + file);
+            Log.WriteToLog("PowerTransferDebug: Args: " + args);
+            System.Diagnostics.Process process = new();
+            process.StartInfo.FileName = file;
+            process.StartInfo.Arguments = args;
+            process.StartInfo.UseShellExecute = false;
+            process.StartInfo.RedirectStandardOutput = true;
+            //process.StartInfo.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
+            process.Start();
+            
+            string transferBotLog = process.StandardOutput.ReadToEnd();
+            process.WaitForExit();
+            Log.WriteToLog(transferBotLog.Trim());
+            return process.ExitCode == 0;
         }
     }
 }

@@ -14,7 +14,8 @@ namespace Ultimate_Splinterlands_Bot_V2
 {
     class Program
     {
-        private static object _TaskLock = new object();
+        private static object _TaskLock = new();
+        private static object _SleepInfoLock = new();
         static void Main(string[] args)
         {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -31,18 +32,29 @@ namespace Ultimate_Splinterlands_Bot_V2
 
             Log.WriteStartupInfoToLog();
             SetStartupPath();
-            if (!ReadConfig() || !CheckForChromeDriver() || !ReadAccounts())
+
+            // We have to configure the http client early because it might be used in account constructor
+            Settings._httpClient.Timeout = new TimeSpan(0, 2, 15);
+
+            if (!ReadConfig() || (Settings.BrowserMode && !CheckForChromeDriver()) || !ReadAccounts())
             {
                 Log.WriteToLog("Press any key to close");
                 Console.ReadKey();
                 Environment.Exit(0);
             }
 
+            if (Settings.LightningMode && Settings.ClaimSeasonReward)
+            {
+                Log.WriteToLog("Season Reward Claiming mode activated - set CLAIM_SEASON_REWARD=false to disable!", Log.LogType.Warning);
+                Log.WriteToLog("The bot will only claim rewards, it will not fight!", Log.LogType.Warning);
+                Thread.Sleep(3500);
+            }
+
             Thread.Sleep(1500); // Sleep 1.5 seconds to read config and welcome message
 
             Initialize();
 
-            CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
+            CancellationTokenSource cancellationTokenSource = new();
             CancellationToken token = cancellationTokenSource.Token;
             _ = Task.Run(async () => await BotLoopAsync(token)).ConfigureAwait(false);
 
@@ -74,6 +86,10 @@ namespace Ultimate_Splinterlands_Bot_V2
 
             DateTime[] sleepInfo = new DateTime[Settings.LightningMode ? Settings.BotInstancesBlockchain.Count : Settings.BotInstancesBrowser.Count];
 
+            var ts = new CancellationTokenSource();
+            var cancellationToken = ts.Token;
+            //DateTime lastResetTime = DateTime.Now;
+
             while (!token.IsCancellationRequested)
             {
                 while (instances.Count < (Settings.BrowserMode ? Settings.MaxBrowserInstances : Settings.Threads) && !token.IsCancellationRequested)
@@ -94,32 +110,65 @@ namespace Ultimate_Splinterlands_Bot_V2
                                     Log.WriteToLog("Splinterlands maintenance - waiting 3 minutes");
                                     Thread.Sleep(3 * 60000);
                                 }
+
+                                //if ((DateTime.Now - lastResetTime).Hours > 4)
+                                //if ((DateTime.Now - lastResetTime).Hours > 4)
+                                //{
+                                //    Log.WriteToLog("[ThreadReset] 4 hours passed - resetting all threads...");
+                                //    Log.WriteToLog("[ThreadReset] Waiting 4 minutes to finish all battles...");
+                                //    Thread.Sleep(4 * 60000);
+                                //    Log.WriteToLog("[ThreadReset] Stopping threads...");
+                                //    ts.Cancel();
+                                //    Task.WhenAll(instances).Wait();
+                                //    ts = new CancellationTokenSource();
+                                //    cancellationToken = ts.Token;
+                                //}
                             }
 
-                            if (Settings.LightningMode)
+                            bool sleep = true;
+                            do
                             {
-                                while (Settings.BotInstancesBlockchain.All(x => x.CurrentlyActive
-                                    || (DateTime)sleepInfo[Settings.BotInstancesBlockchain.IndexOf(x)] > DateTime.Now))
+                                lock (_SleepInfoLock)
                                 {
-                                    Thread.Sleep(20000);
+                                    if (Settings.LightningMode)
+                                    {
+                                        if (!Settings.BotInstancesBlockchain.All(x => x.CurrentlyActive
+                                            || ((DateTime)sleepInfo[Settings.BotInstancesBlockchain.IndexOf(x)] > DateTime.Now
+                                            && !Settings.PlannedPowerTransfers.ContainsKey(x.Username))))
+                                        {
+                                            sleep = false;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        if (!Settings.BotInstancesBrowser.All(x => x.CurrentlyActive
+                                            || (DateTime)sleepInfo[Settings.BotInstancesBrowser.IndexOf(x)] > DateTime.Now))
+                                        {
+                                            sleep = false;
+                                        }
+                                    }
                                 }
-                            }
-                            else
-                            {
-                                while (Settings.BotInstancesBrowser.All(x => x.CurrentlyActive
-                                    || (DateTime)sleepInfo[Settings.BotInstancesBrowser.IndexOf(x)] > DateTime.Now))
+
+                                if (sleep)
                                 {
-                                    Thread.Sleep(20000);
+                                    Thread.Sleep(20 * 1000);
                                 }
-                            }
+                            } while (sleep && !token.IsCancellationRequested);
                         }
 
                         lock (_TaskLock)
                         {
-                            if (firstRuntrough)
+                            if (firstRuntrough && !Settings.ClaimSeasonReward)
                             {
                                 // Delay accounts to avoid them fighting each other
-                                Thread.Sleep(Settings._Random.Next(1000, 6000));
+                                if (Settings.Threads >= 5)
+                                {
+                                    Thread.Sleep(Settings._Random.Next(1000, 6000));
+                                }
+                                else
+                                {
+                                    Thread.Sleep(Settings._Random.Next(500, 2000));
+                                }
                             }
 
                             if (Settings.LightningMode)
@@ -136,11 +185,11 @@ namespace Ultimate_Splinterlands_Bot_V2
                                 instances.Add(Task.Run(async () =>
                                 {
                                     var result = await Settings.BotInstancesBlockchain[botInstance].DoBattleAsync(browserInstance, logoutNeeded, botInstance);
-                                    lock (_TaskLock)
+                                    lock (_SleepInfoLock)
                                     {
                                         sleepInfo[nextBotInstance] = result;
                                     }
-                                }, CancellationToken.None));
+                                }, cancellationToken));
                             }
                             else
                             {
@@ -165,12 +214,12 @@ namespace Ultimate_Splinterlands_Bot_V2
                                 instances.Add(Task.Run(async () =>
                                 {
                                     var result = await Settings.BotInstancesBrowser[botInstance].DoBattleAsync(browserInstance, logoutNeeded, botInstance);
-                                    lock (_TaskLock)
+                                    lock (_SleepInfoLock)
                                     {
                                         sleepInfo[nextBotInstance] = result.sleepTime;
                                         Settings.SeleniumInstances[browserInstance] = (Settings.SeleniumInstances[browserInstance].driver, true);
                                     }
-                                }, CancellationToken.None));
+                                }, cancellationToken));
                             }
                         }
                     }
@@ -213,75 +262,85 @@ namespace Ultimate_Splinterlands_Bot_V2
                 switch (temp[0])
                 {
                     case "PRIORITIZE_QUEST":
-                        Settings.PrioritizeQuest = Boolean.Parse(temp[1]);
+                        Settings.PrioritizeQuest = bool.Parse(temp[1]);
                         break;
                     case "SLEEP_BETWEEN_BATTLES":
                         Settings.SleepBetweenBattles = Convert.ToInt32(temp[1]);
                         break;
+                    // legacy
                     case "ECR_THRESHOLD":
-                        Settings.ECRThreshold = Convert.ToInt32(temp[1]);
+                        Settings.StopBattleBelowECR = Convert.ToInt32(temp[1]);
                         break;
                     // legacy:
                     case "ERC_THRESHOLD":
-                        Settings.ECRThreshold = Convert.ToInt32(temp[1]);
+                        Settings.StopBattleBelowECR = Convert.ToInt32(temp[1]);
+                        break;
+                    case "STOP_BATTLE_BELOW_ECR":
+                        Settings.StopBattleBelowECR = Convert.ToInt32(temp[1]);
+                        break;
+                    case "START_BATTLE_ABOVE_ECR":
+                        Settings.StartBattleAboveECR = Convert.ToInt32(temp[1]);
+                        break;
+                    case "MINIMUM_BATTLE_POWER":
+                        Settings.MinimumBattlePower = Convert.ToInt32(temp[1]);
                         break;
                     case "MAX_BROWSER_INSTANCES":
                         Settings.MaxBrowserInstances = Convert.ToInt32(temp[1]);
                         break;
                     case "CLAIM_SEASON_REWARD":
-                        Settings.ClaimSeasonReward = Boolean.Parse(temp[1]);
+                        Settings.ClaimSeasonReward = bool.Parse(temp[1]);
                         break;
                     case "CLAIM_QUEST_REWARD":
-                        Settings.ClaimQuestReward = Boolean.Parse(temp[1]);
+                        Settings.ClaimQuestReward = bool.Parse(temp[1]);
                         break;
                     case "DONT_CLAIM_QUEST_NEAR_HIGHER_LEAGUE":
-                        Settings.DontClaimQuestNearHigherLeague = Boolean.Parse(temp[1]);
+                        Settings.DontClaimQuestNearHigherLeague = bool.Parse(temp[1]);
                         break;
-                    case "IGNORE_MISSING_CP_AT_QUEST_CLAIM":
-                        Settings.IgnoreMissingCPAtQuestClaim = Boolean.Parse(temp[1]);
+                    case "WAIT_FOR_MISSING_CP_AT_QUEST_CLAIM":
+                        Settings.WaitForMissingCPAtQuestClaim = bool.Parse(temp[1]);
                         break;
                     case "ADVANCE_LEAGUE":
-                        Settings.AdvanceLeague = Boolean.Parse(temp[1]);
+                        Settings.AdvanceLeague = bool.Parse(temp[1]);
                         break;
                     case "REQUEST_NEW_QUEST":
                         Settings.BadQuests = temp[1].Split(',');
                         break;
                     case "USE_LIGHTNING_MODE":
-                        Settings.LightningMode = Boolean.Parse(temp[1]);
+                        Settings.LightningMode = bool.Parse(temp[1]);
                         break;
                     case "SHOW_BATTLE_RESULTS":
-                        Settings.ShowBattleResults = Boolean.Parse(temp[1]);
+                        Settings.ShowBattleResults = bool.Parse(temp[1]);
                         break;
                     case "THREADS":
                         Settings.Threads = Convert.ToInt32(temp[1]);
                         break;
                     case "USE_BROWSER_MODE":
-                        Settings.BrowserMode = Boolean.Parse(temp[1]);
+                        Settings.BrowserMode = bool.Parse(temp[1]);
                         break;
                     case "HEADLESS":
-                        Settings.Headless = Boolean.Parse(temp[1]);
+                        Settings.Headless = bool.Parse(temp[1]);
                         break;
                     case "USE_API":
-                        Settings.UseAPI = Boolean.Parse(temp[1]);
+                        Settings.UseAPI = bool.Parse(temp[1]);
                         break;
                     case "API_URL":
                         Settings.PublicAPIUrl = temp[1];
                         break;
                     case "DEBUG":
-                        Settings.DebugMode = Boolean.Parse(temp[1]);
+                        Settings.DebugMode = bool.Parse(temp[1]);
                         break;
                     case "WRITE_LOG_TO_FILE":
-                        Settings.WriteLogToFile = Boolean.Parse(temp[1]);
+                        Settings.WriteLogToFile = bool.Parse(temp[1]);
                         break;
                     case "DISABLE_CONSOLE_COLORS":
-                        if (Boolean.Parse(temp[1]))
+                        if (bool.Parse(temp[1]))
                         {
                             Log.WriteToLog("Console colors disabled!");
                             ConsoleExtensions.Disable();
                         }
                         break;
                     case "SHOW_API_RESPONSE":
-                        Settings.ShowAPIResponse = Boolean.Parse(temp[1]);
+                        Settings.ShowAPIResponse = bool.Parse(temp[1]);
                         break;
                     case "CHROME_BINARY_PATH":
                         Settings.ChromeBinaryPath = temp[1];
@@ -290,19 +349,19 @@ namespace Ultimate_Splinterlands_Bot_V2
                         Settings.ChromeDriverPath = temp[1];
                         break;
                     case "CHROME_NO_SANDBOX":
-                        Settings.ChromeNoSandbox = Boolean.Parse(temp[1]);
+                        Settings.ChromeNoSandbox = bool.Parse(temp[1]);
                         break;
                     case "RENTAL_BOT_DLL_PATH":
                         Settings.RentalBotDllPath = temp[1];
                         break;
                     case "RENTAL_BOT":
-                        if (Boolean.Parse(temp[1]))
+                        if (bool.Parse(temp[1]))
                         {
                             SetupRentalBot();
                         }
                         break;
                     case "USE_PRIVATE_API":
-                        Settings.UsePrivateAPI = Boolean.Parse(temp[1]);
+                        Settings.UsePrivateAPI = bool.Parse(temp[1]);
                         if (Settings.UsePrivateAPI)
                         {
                             string[] loginData = File.ReadAllText(Settings.StartupPath + @"/config/login.txt").Split(':');
@@ -315,6 +374,13 @@ namespace Ultimate_Splinterlands_Bot_V2
                         break;
                     case "PRIVATE_API_URL":
                         Settings.PrivateAPIUrl = temp[1];
+                        break;
+                    case "POWER_TRANSFER_BOT":
+                        Settings.PowerTransferBot = bool.Parse(temp[1]);
+                        if (Settings.PowerTransferBot)
+                        {
+                            Settings.AvailablePowerTransfers = new();
+                        }
                         break;
                     case "RENT_DAYS":
                         Settings.DaysToRent = Convert.ToInt32(temp[1]);
@@ -336,13 +402,6 @@ namespace Ultimate_Splinterlands_Bot_V2
                 return false;
             }
 
-            // no longer needed
-            //if (Settings.SleepBetweenBattles < 4 && Settings.LightningMode && !Settings.ShowBattleResults)
-            //{
-            //    Log.WriteToLog("Lightning Mode without SHOW_BATTLE_RESULTS enabled - setting minimum sleep time to 4 minutes.", Log.LogType.Warning);
-            //    Settings.SleepBetweenBattles = 4;
-            //}
-
             Log.WriteToLog("Config loaded!", Log.LogType.Success);
             Log.WriteToLog($"Config parameters:{Environment.NewLine}" +
                 $"MODE: {(Settings.LightningMode ? "LIGHTNING (blockchain)" : "BROWSER")}{Environment.NewLine}" +
@@ -352,14 +411,16 @@ namespace Ultimate_Splinterlands_Bot_V2
                 $"PRIORITIZE_QUEST: {Settings.PrioritizeQuest}{Environment.NewLine}" +
                 $"CLAIM_QUEST_REWARD: {Settings.ClaimQuestReward}{Environment.NewLine}" +
                 $"CLAIM_SEASON_REWARD: {Settings.ClaimSeasonReward}{Environment.NewLine}" +
-                $"REQUEST_NEW_QUEST: {String.Join(",", Settings.BadQuests)}{Environment.NewLine}" +
+                $"REQUEST_NEW_QUEST: {string.Join(",", Settings.BadQuests)}{Environment.NewLine}" +
                 $"DONT_CLAIM_QUEST_NEAR_HIGHER_LEAGUE: {Settings.DontClaimQuestNearHigherLeague}{Environment.NewLine}" +
-                $"IGNORE_MISSING_CP_AT_QUEST_CLAIM: {Settings.IgnoreMissingCPAtQuestClaim}{Environment.NewLine}" +
+                $"WAIT_FOR_MISSING_CP_AT_QUEST_CLAIM: {Settings.WaitForMissingCPAtQuestClaim}{Environment.NewLine}" +
                 $"ADVANCE_LEAGUE: {Settings.AdvanceLeague}{Environment.NewLine}" +
                 $"SLEEP_BETWEEN_BATTLES: {Settings.SleepBetweenBattles}{Environment.NewLine}" +
-                $"ECR_THRESHOLD: {Settings.ECRThreshold}{Environment.NewLine}" +
+                $"START_BATTLE_ABOVE_ECR: {Settings.StartBattleAboveECR}{Environment.NewLine}" +
+                $"STOP_BATTLE_BELOW_ECR: {Settings.StopBattleBelowECR}{Environment.NewLine}" +
                 $"USE_API: {Settings.UseAPI}{Environment.NewLine}" +
-                $"USE_PRIVATE_API: {Settings.UsePrivateAPI}");
+                $"USE_PRIVATE_API: {Settings.UsePrivateAPI}{ Environment.NewLine}" +
+                $"POWER_TRANSFER_BOT: {Settings.PowerTransferBot}");
                 
             if (Settings.LightningMode)
             {
@@ -435,7 +496,7 @@ namespace Ultimate_Splinterlands_Bot_V2
                         Settings.BotInstancesBrowser.Add(new BotInstanceBrowser(temp[0].Trim().ToLower(), temp[1].Trim(), indexCounter++));
                     }
                 }
-                else if (temp.Length == 3)
+                else if (temp.Length >= 3)
                 {
                     if (Settings.LightningMode)
                     {
@@ -497,54 +558,60 @@ namespace Ultimate_Splinterlands_Bot_V2
                 { "Stealth Mission", "sneak" }
             };
 
-            Settings.Summoners = new Dictionary<string, string>
-            {
-                { "224", "dragon" },
-                { "27", "earth" },
-                { "16", "water" },
-                { "156", "life" },
-                { "189", "earth" },
-                { "167", "fire" },
-                { "145", "death" },
-                { "5", "fire" },
-                { "71", "water" },
-                { "114", "dragon" },
-                { "178", "water" },
-                { "110", "fire" },
-                { "49", "death" },
-                { "88", "dragon" },
-                { "38", "life" },
-                { "239", "life" },
-                { "74", "death" },
-                { "78", "dragon" },
-                { "260", "fire" },
-                { "70", "fire" },
-                { "109", "death" },
-                { "111", "water" },
-                { "112", "earth" },
-                { "130", "dragon" },
-                { "72", "earth" },
-                { "235", "dragon" },
-                { "56", "dragon" },
-                { "113", "life" },
-                { "200", "dragon" },
-                { "236", "fire" },
-                { "240", "dragon" },
-                { "254", "water" },
-                { "257", "water" },
-                { "258", "death" },
-                { "259", "earth" },
-                { "261", "life" },
-                { "262", "dragon" },
-                { "278", "earth" },
-                { "73", "life" }
-            };
-
             Settings.CardsDetails = Newtonsoft.Json.Linq.JArray.Parse(File.ReadAllText(Settings.StartupPath + @"/data/cardsDetails.json"));
 
-            Settings.LogSummaryList = new List<(int index, string account, string battleResult, string rating, string ECR, string questStatus)>();
+            Settings.Summoners = new Dictionary<string, string>
+            {
+                { "260", "fire" },
+                { "257", "water" },
+                { "437", "water" },
+                { "224", "dragon" },
+                { "189", "earth" },
+                { "145", "death" },
+                { "240", "dragon" },
+                { "167", "fire" },
+                { "438", "death" },
+                { "156", "life" },
+                { "440", "fire" },
+                { "114", "dragon" },
+                { "441", "life" },
+                { "439", "earth" },
+                { "262", "dragon" },
+                { "261", "life" },
+                { "178", "water" },
+                { "258", "death" },
+                { "27", "earth" },
+                { "38", "life" },
+                { "49", "death" },
+                { "5", "fire" },
+                { "70", "fire" },
+                { "73", "life" },
+                { "259", "earth" },
+                { "74", "death" },
+                { "72", "earth" },
+                { "442", "dragon" },
+                { "71", "water" },
+                { "88", "dragon" },
+                { "78", "dragon" },
+                { "200", "dragon" },
+                { "16", "water" },
+                { "239", "life" },
+                { "254", "water" },
+                { "235", "death" },
+                { "113", "life" },
+                { "109", "death" },
+                { "110", "fire" },
+                { "291", "dragon" },
+                { "278", "earth" },
+                { "236", "fire" },
+                { "56", "dragon" },
+                { "112", "earth" },
+                { "111", "water" },
+                { "205", "dragon" },
+                { "130", "dragon" }
+            };
 
-            Settings._httpClient.Timeout = new TimeSpan(0, 2, 15);
+            Settings.LogSummaryList = new List<(int index, string account, string battleResult, string rating, string ECR, string questStatus)>();
 
             if (Settings.LightningMode)
             {
@@ -555,8 +622,8 @@ namespace Ultimate_Splinterlands_Bot_V2
         static void SetStartupPath()
         {
             // Setup startup path
-            string path = System.Reflection.Assembly.GetExecutingAssembly().Location;
-            string directory = System.IO.Path.GetDirectoryName(path);
+            string path = Assembly.GetExecutingAssembly().Location;
+            string directory = Path.GetDirectoryName(path);
             Settings.StartupPath = directory;
         }
         static bool CheckForChromeDriver()
@@ -564,7 +631,7 @@ namespace Ultimate_Splinterlands_Bot_V2
             var chromeDriverFileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "chromedriver.exe" : "chromedriver";
             if (!File.Exists(Settings.StartupPath + @"/" + chromeDriverFileName))
             {
-                Log.WriteToLog("No ChromeDriver installed - please download from https://chromedriver.chromium.org/ and insert .exe into bot folder", Log.LogType.CriticalError);
+                Log.WriteToLog("No ChromeDriver installed - please download from https://chromedriver.chromium.org/ and insert .exe into bot folder or use lightning mode", Log.LogType.CriticalError);
                 return false;
             }
 
